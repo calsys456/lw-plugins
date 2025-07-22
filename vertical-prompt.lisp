@@ -245,7 +245,8 @@ TARGET in the SOURCE. Otherwise return NIL."
 
 (defun buffer-string-subseq (buffer-string start &optional end)
   (let* ((str (editor::buffer-string-string buffer-string))
-         (props (editor::buffer-string-properties buffer-string))
+         (props (when (editor::buffer-string-p buffer-string)
+                  (editor::buffer-string-properties buffer-string)))
          (cut-end-p (and end (/= end (length str)))))
     (unless (zerop start)
       (setq str (subseq str start)
