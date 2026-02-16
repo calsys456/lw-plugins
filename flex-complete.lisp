@@ -48,6 +48,51 @@ list items.")
 (defun flex-complete-fuzzy-search (target source)
   "Fuzzy search TARGET string within SOURCE.
 
+Return a score, smaller is better. NIL if not matched.
+
+Using the godoh algorithm inspired by
+https://github.com/emacs-mirror/emacs/commit/aa181cd35220242a23fe98932386facaba18c4c5#diff-56a8438d7ef11340ece33a71e7493eb409eac6e3d6e542e57e91f70c727807f9R2282"
+  (declare (optimize (speed 3) (space 0) (safety 0) (debug 0) (fixnum-safety 0)))
+  (flet ((natual-min (i j)
+           (declare (inline nullable-min))
+           (cond ((and (>= i 0) (>= j 0)) (min i j))
+                 ((>= i 0) i)
+                 (t j))))
+    (loop with matched = (make-array (list (1+ (length source)) (1+ (length target)))
+                                     :element-type 'fixnum
+                                     :initial-element -1)
+          with scores = (make-array (list (1+ (length source)) (1+ (length target)))
+                                    :element-type 'fixnum
+                                    :initial-element -1)
+          with found-target-index of-type fixnum = 0
+          initially (loop for col of-type fixnum from 1 to (length source)
+                          do (setf (aref scores col 0) 5)
+                          finally (setf (aref scores 0 0) 0))
+          for source-index from 0
+          for source-char across source
+          do (loop for target-index of-type fixnum from 0 to found-target-index
+                   for target-char across target
+                   for found = (char-equal source-char target-char)
+                   when found
+                     do (when (= target-index found-target-index)
+                          (incf found-target-index))
+                        (setf (aref matched (1+ source-index) (1+ target-index))
+                              (natual-min (aref matched source-index target-index)
+                                          (aref scores source-index target-index)))
+                   when (> found-target-index 0)
+                     do (setf (aref scores (1+ source-index) (1+ target-index))
+                              (natual-min (+ (aref matched (1+ source-index) target-index) 10)
+                                          (+ (aref scores (1+ source-index) target-index)  1))))
+          finally (when (= found-target-index (length target))
+                    (return (loop for row of-type fixnum from 1 to (length target)
+                                  sum (loop for col of-type fixnum from 1 to (length source)
+                                            for score = (aref matched col row)
+                                            when (>= score 0) minimizing score)))))))
+
+#| Obsolete one
+(defun flex-complete-fuzzy-search (target source)
+  "Fuzzy search TARGET string within SOURCE.
+
 If TARGET matches, return a list of the positions of each character of
 TARGET in the SOURCE. Otherwise return NIL."
   (loop with start = -1
@@ -57,6 +102,7 @@ TARGET in the SOURCE. Otherwise return NIL."
         else do (setq start (position c source :start (1+ start) :test #'char-equal))
         if (null start) do (return)
         else collect start))
+|#
 
 ;; complete-in-place will call flex-complete-func & refresh candidate
 ;; list each time user change the selection (Up or Down). If the items
@@ -93,46 +139,38 @@ TARGET in the SOURCE. Otherwise return NIL."
     ;; Searching
     
     ;; In this step we find symbol that fuzzy-matching the STR, and
-    ;; collect it with a embedded list structure: the SYM itself, a
-    ;; list of matched position STARTS (returned by
-    ;; FLEX-COMPLETE-FUZZY-SEARCH), and the string representation of
-    ;; the symbol STRING. These informations will be used for sorting.
+    ;; collect it with a embedded list structure: the SYM itself, its
+    ;; SCORE (returned by FLEX-COMPLETE-FUZZY-SEARCH), and the string
+    ;; representation of the symbol STRING. These informations will be
+    ;; used for sorting.
     (let ((*package* current-package))
       (dolist (package external-packages)
         (do-external-symbols (sym package)
           (let ((string (prin1-to-string sym)))
-            (when-let (starts (flex-complete-fuzzy-search str string))
-              (vector-push-extend (list sym starts string) result)))))
+            (when-let (score (flex-complete-fuzzy-search str string))
+              (vector-push-extend (list sym score string) result)))))
       (dolist (package internal-packages) 
        (let ((syms (system:package-internal-symbols package)))
           (dotimes (i (length syms))
             (let ((sym (aref syms i)))
               (when (symbolp sym)
                 (let ((string (prin1-to-string sym)))
-                  (when-let (starts (flex-complete-fuzzy-search str string))
-                    (vector-push-extend (list sym starts string) result)))))))))
-    ;; Sort symbols according to the "density" of matched characters -
-    ;; more the matched characters grouped together, more it is
-    ;; preferred. The start position of the first match is also count.
-    ;; If they're same, then rank two symbols using length & string<
-    ;; of their string representation.
+                  (when-let (score (flex-complete-fuzzy-search str string))
+                    (vector-push-extend (list sym score string) result)))))))))
+    ;; Sort symbols according to the score. If they're same, then rank
+    ;; two symbols using length of their names, eventually fallback to
+    ;; STRING< .
     (sort result
           #'(lambda (list1 list2)
-              (destructuring-bind (starts1 string1) list1
-                (destructuring-bind (starts2 string2) list2
-                  (let ((n1 (loop for j = 0 then i
-                                  for i in starts1
-                                  sum (- i j)))
-                        (n2 (loop for j = 0 then i
-                                  for i in starts2
-                                  sum (- i j))))
-                    (if (= n1 n2)
-                      (let ((len1 (length string1))
-                            (len2 (length string2)))
-                        (if (= len1 len2)
-                          (string< string1 string2)
-                          (< len1 len2)))
-                      (< n1 n2))))))
+              (destructuring-bind (score1 string1) list1
+                (destructuring-bind (score2 string2) list2
+                  (if (= score1 score2)
+                    (let ((len1 (length string1))
+                          (len2 (length string2)))
+                      (if (= len1 len2)
+                        (string< string1 string2)
+                        (< len1 len2)))
+                    (< score1 score2)))))
           :key #'cdr)
     ;; There may be some duplicate symbols during previous search, but
     ;; checking duplicate in a large vector is expensive, so we move
