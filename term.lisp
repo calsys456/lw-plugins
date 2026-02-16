@@ -657,7 +657,6 @@ characters into integers, mostly)."
 (defun pty-pane-gesture (pane x y spec)
   (declare (ignore x y))
   (with-slots (pty-stream) pane
-    (char-code #\Backspace)
     (let* ((data (sys:gesture-spec-data spec))
            (mod (case (sys:gesture-spec-modifiers spec)
                   (0 0) (1 2) (2 5) (3 6)
